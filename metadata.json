@@ -1,0 +1,6 @@
+{
+  "name": "SmartStay IoT",
+  "description": "Hệ thống quản lý phòng trọ IoT thông minh, hỗ trợ quản trị viên, chủ hộ và người thuê.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

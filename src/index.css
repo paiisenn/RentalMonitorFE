@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #09090b; /* zinc-950 */
+  --color-surface-container: #18181b; /* zinc-900 */
+  --color-surface-container-high: #27272a; /* zinc-800 */
+  --color-surface-container-highest: #3f3f46; /* zinc-700 */
+  
+  --color-primary: #22d3ee; /* cyan-400 */
+  --color-primary-container: #06b6d4; /* cyan-500 */
+  --color-on-primary: #083344; /* cyan-950 */
+  
+  --color-success: #22c55e; /* green-500 */
+  --color-warning: #f59e0b; /* amber-500 */
+  --color-error: #ef4444; /* red-500 */
+  
+  --color-on-surface: #e2e8f0; /* slate-200 */
+  --color-on-surface-variant: #71717a; /* zinc-500 */
+  
+  --font-inter: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.5rem;
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-on-surface font-inter antialiased;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-zinc-900 border border-cyan-900/20 shadow-xl shadow-black/20;
+  }
+  
+  .active-indicator {
+    @apply bg-primary shadow-[0_0_10px_rgba(34,211,238,0.5)];
+  }
+
+  .status-pulse {
+    animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.1); }
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-zinc-800 rounded-full hover:bg-zinc-700;
+  }
+}
