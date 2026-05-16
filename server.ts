@@ -162,20 +162,21 @@ async function seedData() {
       ]);
     }
 
-    const deviceCount = await Device.countDocuments();
-    // Force re-seed if devices are missing or suspicious
-    if (deviceCount === 0 || deviceCount < 8) {
-      console.log("Seeding devices for all rooms...");
-      await Device.deleteMany({}); // Clear existing to fix any corrupted IDs
+    const meterExists = await Device.findOne({ _id: 'METER_101' });
+    // Force re-seed if standard IDs are missing
+    if (deviceCount === 0 || !meterExists) {
+      console.log("Forcing re-seed to synchronize hardware IDs (METER_101, etc.)...");
+      await Device.deleteMany({}); 
       const roomsInDb = await Room.find();
       const devicesToSeed = [];
 
       for (const room of roomsInDb) {
+        const roomSuffix = room.number.includes('101') ? '101' : (room.number.includes('202') ? '102' : '103');
         devicesToSeed.push(
-          { name: `Đèn trần - Phòng ${room.number}`, type: 'light', status: 'online', state: { on: false }, lastUpdate: '1 giờ trước', roomNumber: room.number, roomId: room._id.toString() },
-          { name: `Khóa cửa - Phòng ${room.number}`, type: 'lock', status: 'online', state: { locked: true }, lastUpdate: '30 phút trước', roomNumber: room.number, roomId: room._id.toString() },
-          { name: `Báo khói - Phòng ${room.number}`, type: 'fire_alarm', status: 'online', state: { alert: false }, lastUpdate: '2 giờ trước', roomNumber: room.number, roomId: room._id.toString() },
-          { name: `Đồng hồ tổng - Phòng ${room.number}`, type: 'meter', status: 'online', state: { electricity: room.electricity_index || 0, water: room.water_index || 0 }, lastUpdate: '10 giây trước', roomNumber: room.number, roomId: room._id.toString() }
+          { _id: `LIGHT_${roomSuffix}`, name: `Đèn trần - Phòng ${room.number}`, type: 'light', status: 'online', state: { on: false }, lastUpdate: '1 giờ trước', roomNumber: room.number, roomId: room._id.toString() },
+          { _id: `LOCK_${roomSuffix}`, name: `Khóa cửa - Phòng ${room.number}`, type: 'lock', status: 'online', state: { locked: true }, lastUpdate: '30 phút trước', roomNumber: room.number, roomId: room._id.toString() },
+          { _id: `FIRE_${roomSuffix}`, name: `Báo khói - Phòng ${room.number}`, type: 'fire_alarm', status: 'online', state: { alert: false }, lastUpdate: '2 giờ trước', roomNumber: room.number, roomId: room._id.toString() },
+          { _id: `METER_${roomSuffix}`, name: `Đồng hồ tổng - Phòng ${room.number}`, type: 'meter', status: 'online', state: { electricity: room.electricity_index || 0, water: room.water_index || 0 }, lastUpdate: '10 giây trước', roomNumber: room.number, roomId: room._id.toString() }
         );
       }
 
@@ -620,6 +621,99 @@ async function startServer() {
     }
   });
 
+  // NHẬN DỮ LIỆU TỪ GATEWAY (ARDUINO -> SERVER)
+  app.post("/api/v1/devices/status", async (req, res) => {
+    const { deviceId, value } = req.body;
+    console.log(`[IOT] Status update from Gateway: ${deviceId} = ${value}`);
+
+    try {
+      const device = await Device.findOne({ _id: deviceId });
+      if (!device) return res.status(404).json({ error: "Device not found" });
+
+      const updateData: any = {
+        last_state: value,
+        last_seen: new Date(),
+        updatedAt: new Date(),
+        lastUpdate: "Vừa xong"
+      };
+
+      // Xử lý logic đặc biệt cho Meter (Điện Nước)
+      if (device.type === 'meter') {
+         const eMatch = value.match(/E:([\d.]+)/);
+         const wMatch = value.match(/W:([\d.]+)/);
+         if (eMatch) updateData["state.electricity"] = parseFloat(eMatch[1]);
+         if (wMatch) updateData["state.water"] = parseFloat(wMatch[1]);
+      }
+
+      const updated = await Device.findOneAndUpdate(
+        { _id: deviceId },
+        { $set: updateData },
+        { new: true }
+      );
+
+      // Lưu log hoạt động
+      await DeviceLog.create({
+        device_id: deviceId,
+        event: "status_update",
+        value: value,
+        ts: new Date()
+      });
+
+      // Phát realtime lên giao diện web
+      const result = updated?.toJSON() as any;
+      io.emit("device-update", { ...result, id: deviceId });
+
+      // Nếu là hỏa hoạn -> Tạo thông báo khẩn cấp + QUY TRÌNH CỨU HỘ
+      if (value === 'FIRE') {
+         // 1. Tạo thông báo
+         const newNotif = await Notification.create({
+            title: "CẢNH BÁO CHÁY",
+            content: `Phát hiện cháy tại thiết bị ${deviceId}! Đang kích hoạt cứu hộ tự động...`,
+            type: 'alert',
+            severity: 'critical',
+            time: new Date().toLocaleTimeString('vi-VN')
+         });
+         io.emit('alert', newNotif);
+
+         // 2. Tự động mở cửa & bật đèn trong cùng phòng
+         if (device.room_id || device.roomNumber) {
+            const roomId = device.room_id || device.roomId || device.roomNumber;
+            const roomDevices = await Device.find({ 
+               $or: [
+                 { room_id: roomId }, 
+                 { roomId: roomId }, 
+                 { roomNumber: roomId }
+               ] 
+            });
+
+            for (const dev of roomDevices) {
+               let updatedDev = null;
+               if (dev.type === 'light') {
+                  updatedDev = await Device.findByIdAndUpdate(dev._id, {
+                     $set: { "state.on": true, last_state: 'ON', lastUpdate: 'CỨU HỘ' }
+                  }, { new: true });
+               } else if (dev.type === 'lock') {
+                  updatedDev = await Device.findByIdAndUpdate(dev._id, {
+                     $set: { "state.locked": false, last_state: 'DOOR_OPEN', lastUpdate: 'CỨU HỘ' }
+                  }, { new: true });
+               }
+
+               if (updatedDev) {
+                  const data = updatedDev.toJSON() as any;
+                  data.id = updatedDev._id.toString();
+                  io.emit("device-update", data);
+               }
+            }
+         }
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[IOT] Error handling status update:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   app.post("/api/v1/devices/light/toggle", authenticateToken, async (req: any, res) => {
     const { id } = req.body;
     console.log(`[API] Toggle light: ${id}`);
@@ -651,6 +745,13 @@ async function startServer() {
         const result = updatedDevice.toJSON() as any;
         const finalId = result.id || updatedDevice._id?.toString() || id;
         io.emit("device-update", { ...result, id: finalId });
+        
+        // PHÁT LỆNH XUỐNG GATEWAY
+        io.emit("command", {
+          deviceId: finalId,
+          command: newOnState ? "LIGHT_ON" : "LIGHT_OFF"
+        });
+        
         res.json({ ...result, id: finalId });
       } else {
         res.status(500).json({ error: "Failed to update light" });
@@ -693,6 +794,13 @@ async function startServer() {
         const result = updatedDevice.toJSON() as any;
         const finalId = result.id || updatedDevice._id?.toString() || id;
         io.emit("device-update", { ...result, id: finalId });
+        
+        // PHÁT LỆNH XUỐNG GATEWAY
+        io.emit("command", {
+          deviceId: finalId,
+          command: action === 'open' ? "UNLOCK" : "LOCK"
+        });
+
         res.json({ ...result, id: finalId });
       } else {
         res.status(500).json({ error: "Failed to update door" });
@@ -711,6 +819,13 @@ async function startServer() {
     try {
       const sensor = await Device.findOne({ _id: id });
       if (!sensor) return res.status(404).json({ error: "Sensor not found" });
+
+      // PHÁT LỆNH XUỐNG GATEWAY
+      console.log(`[EMERGENCY] Emitting command FIRE for device: ${id}`);
+      io.emit("command", {
+        deviceId: id,
+        command: "FIRE"
+      });
 
       // 1. Update the sensor state
       await Device.findOneAndUpdate({ _id: id }, {
@@ -839,6 +954,11 @@ async function startServer() {
       }, { new: true });
 
       if (updated) {
+        // PHÁT LỆNH TẮT BÁO CHÁY XUỐNG GATEWAY
+        io.emit("command", {
+          deviceId: id,
+          command: "FIRE_NORMAL"
+        });
         const data = updated.toJSON() as any;
         data.id = updated._id.toString();
         console.log(`[EMERGENCY] Device ${deviceIdStr} reset successfully.`);
@@ -1066,8 +1186,8 @@ async function startServer() {
     });
   });
 
-  // IoT Simulation
-  if (isConnected) {
+  // IoT Simulation - TẠM TẮT ĐỂ TEST PHẦN CỨNG THẬT
+  if (false && isConnected) {
     setInterval(async () => {
       try {
         const meters = await Device.find({ type: 'meter' });
